@@ -14,7 +14,8 @@ cors = CORS(app, resources={r"/*": {"origins": ["https://nusget.ninjacheetah.dev
 @app.get("/download/wad/")
 def download_wad_no_args():
     error_response = {
-        "Error": "No target Title ID or version was supplied."
+        "Error": "No target Title ID or version was supplied.",
+        "Cat": "https://http.cat/images/400.jpg"
     }
     return error_response, 400
 
@@ -27,14 +28,32 @@ def download_wad(tid, ver):
     except ValueError:
         ver = None
 
+    title = libWiiPy.title.Title()
+    # Get the TMD. If this fails, the Title likely does not exist, so return a 404.
     try:
-        title = libWiiPy.title.download_title(tid, ver)
-        file_data = io.BytesIO(title.dump_wad())
+        title.load_tmd(libWiiPy.title.download_tmd(tid, ver, wiiu_endpoint=True))
     except ValueError:
         response = {
-            "Error": "The requested Title or version could not be found."
+            "Error": "The requested Title or version could not be found.",
+            "Cat": "https://http.cat/images/404.jpg"
         }
         return response, 404
+    # Get the Ticket. If this fails, the Title is probably not freely available, so return a 403.
+    try:
+        title.load_ticket(libWiiPy.title.download_ticket(tid, wiiu_endpoint=True))
+    except ValueError:
+        response = {
+            "Error": "No Ticket is available for the requested Title.",
+            "Cat": "https://http.cat/images/403.jpg"
+        }
+        return response, 403
+    # Get the content for this Title.
+    title.load_content_records()
+    title.content.content_list = libWiiPy.title.download_contents(tid, title.tmd, wiiu_endpoint=True)
+    # Build the retail certificate chain.
+    title.load_cert_chain(libWiiPy.title.download_cert_chain(wiiu_endpoint=True))
+    # Dump the WAD so we can hand it over.
+    file_data = io.BytesIO(title.dump_wad())
 
     metadata = {
         "tid": tid,
@@ -62,14 +81,32 @@ def download_tad(tid, ver):
     except ValueError:
         ver = None
 
+    title = libTWLPy.title.Title()
+    # Get the TMD. If this fails, the Title likely does not exist, so return a 404.
     try:
-        title = libTWLPy.download_title(tid, ver)
-        file_data = io.BytesIO(title.dump_tad())
+        title.load_tmd(libTWLPy.download_tmd(tid, ver))
     except ValueError:
         response = {
-            "Error": "The requested Title or version could not be found."
+            "Error": "The requested Title or version could not be found.",
+            "Cat": "https://http.cat/images/404.jpg"
         }
         return response, 404
+    # Get the Ticket. If this fails, the Title is probably not freely available, so return a 403.
+    try:
+        title.load_ticket(libTWLPy.download_ticket(tid))
+    except ValueError:
+        response = {
+            "Error": "No Ticket is available for the requested Title.",
+            "Cat": "https://http.cat/images/403.jpg"
+        }
+        return response, 403
+    # Get the content for this Title.
+    title.load_content_records()
+    title.content.content = libTWLPy.download_content(tid, title.tmd.content_record.content_id)
+    # Build the retail certificate chain.
+    title.tad.set_cert_data(libTWLPy.download_cert())
+    # Dump the WAD so we can hand it over.
+    file_data = io.BytesIO(title.dump_tad())
 
     metadata = {
         "tid": tid,

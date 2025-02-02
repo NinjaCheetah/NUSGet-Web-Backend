@@ -1,4 +1,4 @@
-libWiiPy
+git+https://github.com/NinjaCheetah/libWiiPy
 libTWLPy
 flask
 flask-cors
