@@ -11,7 +11,6 @@ app = Flask(__name__)
 cors = CORS(app, resources={r"/*": {"origins": ["https://nusget.ninjacheetah.dev", "http://localhost:4000", "http://127.0.0.1:4000"]}})
 #app.config['CORS_HEADERS'] = 'Content-Type'
 
-
 @app.get("/download/wad/")
 def download_wad_no_args():
     error_response = {
