@@ -1,4 +1,3 @@
 git+https://github.com/NinjaCheetah/libWiiPy
 libTWLPy
-flask
-flask-cors
+fastapi[standard]

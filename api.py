@@ -6,31 +6,68 @@ import io
 import json
 import zipfile
 
-from flask import Flask, jsonify, send_file, request
-from flask_cors import CORS, cross_origin
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
 import libWiiPy
 import libTWLPy
 
 
-api_ver = "1.0"
+class TitleNotFoundException(Exception):
+    def __init__(self, tid: str):
+        self.tid = tid
 
-app = Flask(__name__)
-cors = CORS(app, resources={r"/*": {"origins": ["https://nusget.ninjacheetah.dev", "http://localhost:4000", "http://127.0.0.1:4000"]}})
+class NoTicketException(Exception):
+    def __init__(self, tid: str):
+        self.tid = tid
 
-@app.get("/download/wad/")
-def download_wad_no_args():
-    error_response = {
-        "Error": "No target Title ID or version was supplied.",
-        "Cat": "https://http.cat/images/400.jpg"
-    }
-    return error_response, 400
+app = FastAPI()
+origins = [
+    "http://localhost:4000",
+    "http://127.0.0.1:4000",
+    "https://nusget.ninjacheetah.dev",
+]
+# noinspection PyTypeChecker
+# PyCharm thinks CORSMiddleware is the wrong type, it's a confirmed PyCharm bug.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.get("/download/wad/<string:tid>/<string:ver>")
-def download_wad(tid, ver):
+@app.exception_handler(TitleNotFoundException)
+def title_not_found_exception_handler(request: Request, exc: TitleNotFoundException):
+    return JSONResponse(
+        status_code=404,
+        content={
+            "message": f"Title ID {exc.tid} or Title version not found.",
+            "code": "title.notfound",
+            "image": "https://http.cat/404"
+        },
+    )
+
+@app.exception_handler(NoTicketException)
+def no_ticket_exception_handler(request: Request, exc: NoTicketException):
+    return JSONResponse(
+        status_code=406,
+        content={
+            "message": f"No Ticket is available for the requested Title {exc.tid}.",
+            "code": "title.notik",
+            "image": "https://http.cat/406"
+        },
+    )
+
+@app.get("/v1/titles/{tid}/versions/{ver}/download/wad", response_model=bytes)
+def download_wad(tid: str, ver: str):
     try:
-        ver = int(ver)
-        if ver == -1:
+        if ver == "latest":
             ver = None
+        else:
+            ver = int(ver)
+            if ver < 0:
+                ver = None
     except ValueError:
         ver = None
 
@@ -39,51 +76,44 @@ def download_wad(tid, ver):
     try:
         title.load_tmd(libWiiPy.title.download_tmd(tid, ver, wiiu_endpoint=True))
     except ValueError:
-        response = {
-            "Error": "The requested Title or version could not be found.",
-            "Cat": "https://http.cat/images/404.jpg"
-        }
-        return response, 404
-    # Get the Ticket. If this fails, the Title is probably not freely available, so return a 403.
+        raise TitleNotFoundException(tid=tid)
+    # Get the Ticket. If this fails, the Title is probably not freely available, so return a 406.
     try:
         title.load_ticket(libWiiPy.title.download_ticket(tid, wiiu_endpoint=True))
     except ValueError:
-        response = {
-            "Error": "No Ticket is available for the requested Title.",
-            "Cat": "https://http.cat/images/403.jpg"
-        }
-        return response, 403
+        raise NoTicketException(tid=tid)
     # Get the content for this Title.
     title.load_content_records()
     title.content.content_list = libWiiPy.title.download_contents(tid, title.tmd, wiiu_endpoint=True)
     # Build the retail certificate chain.
     title.load_cert_chain(libWiiPy.title.download_cert_chain(wiiu_endpoint=True))
-    # Dump the WAD so we can hand it over.
-    file_data = io.BytesIO(title.dump_wad())
-
+    # Generate required metadata and return the response.
     ver_final = ver if ver else title.tmd.title_version
     metadata = {
         "tid": tid,
         "version": ver_final,
     }
-    response = send_file(
-        file_data,
-        mimetype="application/octet-stream",
-        as_attachment=True,
-        download_name=f"{tid}-v{ver_final}.wad"
+    headers = {
+        'Content-Disposition': f'attachment; filename="{tid}-v{ver_final}.wad"',
+        'X-Metadata': json.dumps(metadata),
+        'Access-Control-Expose-Headers': 'X-Metadata',
+    }
+    response = Response(
+        title.dump_wad(),
+        headers=headers,
+        media_type="application/octet-stream",
     )
-
-    response.headers["X-Metadata"] = json.dumps(metadata)
-    response.headers["Access-Control-Expose-Headers"] = "X-Metadata"
-
     return response
 
-@app.get("/download/enc/<string:tid>/<string:ver>")
-def download_enc(tid, ver):
+@app.get("/v1/titles/{tid}/versions/{ver}/download/enc")
+def download_enc(tid: str, ver: str):
     try:
-        ver = int(ver)
-        if ver == -1:
+        if ver == "latest":
             ver = None
+        else:
+            ver = int(ver)
+            if ver < 0:
+                ver = None
     except ValueError:
         ver = None
 
@@ -92,11 +122,7 @@ def download_enc(tid, ver):
         tmd = libWiiPy.title.TMD()
         tmd.load(libWiiPy.title.download_tmd(tid, ver, wiiu_endpoint=True))
     except ValueError:
-        response = {
-            "Error": "The requested Title or version could not be found.",
-            "Cat": "https://http.cat/images/404.jpg"
-        }
-        return response, 404
+        raise TitleNotFoundException(tid=tid)
     # Get the encrypted contents for the target version of the Title.
     content_list = libWiiPy.title.download_contents(tid, tmd, wiiu_endpoint=True)
     contents = []
@@ -110,31 +136,33 @@ def download_enc(tid, ver):
         zip_file.writestr("tmd", tmd.dump())
         for file in zip_file.filelist:
             file.create_system = 0
-    out_buffer = io.BytesIO(zip_buffer.getvalue())
-
+    # Generate required metadata and return the response.
     ver_final = ver if ver else tmd.title_version
     metadata = {
         "tid": tid,
         "version": ver_final,
     }
-    response = send_file(
-        out_buffer,
-        mimetype="application/zip",
-        as_attachment=True,
-        download_name=f"{tid}-v{ver_final}-Encrypted.zip"
+    headers = {
+        'Content-Disposition': f'attachment; filename="{tid}-v{ver_final}-Encrypted.zip"',
+        'X-Metadata': json.dumps(metadata),
+        'Access-Control-Expose-Headers': 'X-Metadata',
+    }
+    response = Response(
+        zip_buffer.getvalue(),
+        headers=headers,
+        media_type="application/zip"
     )
-
-    response.headers["X-Metadata"] = json.dumps(metadata)
-    response.headers["Access-Control-Expose-Headers"] = "X-Metadata"
-
     return response
 
-@app.get("/download/dec/<string:tid>/<string:ver>")  # And the winner for "least efficient API endpoint" goes to...
-def download_dec(tid, ver):
+@app.get("/v1/titles/{tid}/versions/{ver}/download/dec")  # And the winner for "least efficient API endpoint" goes to...
+def download_dec(tid: str, ver: str):
     try:
-        ver = int(ver)
-        if ver == -1:
+        if ver == "latest":
             ver = None
+        else:
+            ver = int(ver)
+            if ver < 0:
+                ver = None
     except ValueError:
         ver = None
 
@@ -143,20 +171,12 @@ def download_dec(tid, ver):
     try:
         title.load_tmd(libWiiPy.title.download_tmd(tid, ver, wiiu_endpoint=True))
     except ValueError:
-        response = {
-            "Error": "The requested Title or version could not be found.",
-            "Cat": "https://http.cat/images/404.jpg"
-        }
-        return response, 404
-    # Get the Ticket. If this fails, the Title is probably not freely available, so return a 403.
+        raise TitleNotFoundException(tid=tid)
+    # Get the Ticket. If this fails, the Title is probably not freely available, so return a 406.
     try:
         title.load_ticket(libWiiPy.title.download_ticket(tid, wiiu_endpoint=True))
     except ValueError:
-        response = {
-            "Error": "No Ticket is available for the requested Title.",
-            "Cat": "https://http.cat/images/403.jpg"
-        }
-        return response, 403
+        raise NoTicketException(tid=tid)
     # Get the content for this Title.
     title.load_content_records()
     title.content.content_list = libWiiPy.title.download_contents(tid, title.tmd, wiiu_endpoint=True)
@@ -174,31 +194,33 @@ def download_dec(tid, ver):
         zip_file.writestr("tik", title.ticket.dump())
         for file in zip_file.filelist:
             file.create_system = 0
-    out_buffer = io.BytesIO(zip_buffer.getvalue())
-
+    # Generate required metadata and return the response.
     ver_final = ver if ver else title.tmd.title_version
     metadata = {
         "tid": tid,
         "version": ver_final,
     }
-    response = send_file(
-        out_buffer,
-        mimetype="application/zip",
-        as_attachment=True,
-        download_name=f"{tid}-v{ver_final}-Decrypted.zip"
+    headers = {
+        'Content-Disposition': f'attachment; filename="{tid}-v{ver_final}-Decrypted.zip"',
+        'X-Metadata': json.dumps(metadata),
+        'Access-Control-Expose-Headers': 'X-Metadata',
+    }
+    response = Response(
+        zip_buffer.getvalue(),
+        headers=headers,
+        media_type="application/zip"
     )
-
-    response.headers["X-Metadata"] = json.dumps(metadata)
-    response.headers["Access-Control-Expose-Headers"] = "X-Metadata"
-
     return response
 
-@app.get("/download/tad/<string:tid>/<string:ver>")
-def download_tad(tid, ver):
+@app.get("/v1/titles/{tid}/versions/{ver}/download/tad")
+def download_tad(tid: str, ver: str):
     try:
-        ver = int(ver)
-        if ver == -1:
+        if ver == "latest":
             ver = None
+        else:
+            ver = int(ver)
+            if ver < 0:
+                ver = None
     except ValueError:
         ver = None
 
@@ -207,58 +229,47 @@ def download_tad(tid, ver):
     try:
         title.load_tmd(libTWLPy.download_tmd(tid, ver))
     except ValueError:
-        response = {
-            "Error": "The requested Title or version could not be found.",
-            "Cat": "https://http.cat/images/404.jpg"
-        }
-        return response, 404
-    # Get the Ticket. If this fails, the Title is probably not freely available, so return a 403.
+        raise TitleNotFoundException(tid=tid)
+    # Get the Ticket. If this fails, the Title is probably not freely available, so return a 406.
     try:
         title.load_ticket(libTWLPy.download_ticket(tid))
     except ValueError:
-        response = {
-            "Error": "No Ticket is available for the requested Title.",
-            "Cat": "https://http.cat/images/403.jpg"
-        }
-        return response, 403
+        raise NoTicketException(tid=tid)
     # Get the content for this Title.
     title.load_content_records()
     title.content.content = libTWLPy.download_content(tid, title.tmd.content_record.content_id)
     # Build the retail certificate chain.
     title.tad.set_cert_data(libTWLPy.download_cert())
-    # Dump the WAD so we can hand it over.
-    file_data = io.BytesIO(title.dump_tad())
-
+    # Generate required metadata and return the response.
     ver_final = ver if ver else title.tmd.title_version
     metadata = {
         "tid": tid,
         "version": ver_final,
     }
-    response = send_file(
-        file_data,
-        mimetype="application/octet-stream",
-        as_attachment=True,
-        download_name=f"{tid}-v{ver_final}.tad"
+    headers = {
+        'Content-Disposition': f'attachment; filename="{tid}-v{ver_final}.tad"',
+        'X-Metadata': json.dumps(metadata),
+        'Access-Control-Expose-Headers': 'X-Metadata',
+    }
+    response = Response(
+        title.dump_tad(),
+        headers=headers,
+        media_type="application/octet-stream",
     )
-
-    response.headers["X-Metadata"] = json.dumps(metadata)
-    response.headers["Access-Control-Expose-Headers"] = "X-Metadata"
-
     return response
 
-@app.route('/version', methods=['GET'])
+@app.get('/version')
 def get_version():
     result = {
-        "API Version": api_ver,
         "libWiiPy Version": version("libWiiPy"),
         "libTWLPy Version": version("libTWLPy"),
     }
     return result
 
-@app.route("/")
-@cross_origin()
-def hello_world():
-  return "You're reached api.nusget.ninjacheetah.dev, which probably means you're in the wrong place."
+@app.get("/health")
+def health_check():
+    return {"status": "OK"}, 200
 
-if __name__ == '__main__':
-    app.run()
+@app.get("/")
+def hello_world():
+  return "You've reached api.nusget.ninjacheetah.dev"
