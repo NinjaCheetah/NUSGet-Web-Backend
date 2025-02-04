@@ -268,7 +268,7 @@ def get_version():
 
 @app.get("/health")
 def health_check():
-    return {"status": "OK"}, 200
+    return JSONResponse(status_code=200, content={"status": "OK"})
 
 @app.get("/")
 def hello_world():
