@@ -1,7 +1,6 @@
 # "api.py" from NUSGet-Web-Backend by NinjaCheetah
 # https://github.com/NinjaCheetah/NUSGet-Web-Backend
 
-from importlib.metadata import version
 import io
 import json
 import zipfile
@@ -11,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 import libWiiPy
 import libTWLPy
+from pydantic import BaseModel
 
 
 class TitleNotFoundException(Exception):
@@ -20,6 +20,11 @@ class TitleNotFoundException(Exception):
 class NoTicketException(Exception):
     def __init__(self, tid: str):
         self.tid = tid
+
+class ErrorMessage(BaseModel):
+    message: str
+    code: str
+    image: str
 
 app = FastAPI()
 origins = [
@@ -51,15 +56,40 @@ def title_not_found_exception_handler(request: Request, exc: TitleNotFoundExcept
 @app.exception_handler(NoTicketException)
 def no_ticket_exception_handler(request: Request, exc: NoTicketException):
     return JSONResponse(
-        status_code=406,
+        status_code=405,
         content={
             "message": f"No Ticket is available for the requested Title {exc.tid}.",
             "code": "title.notik",
-            "image": "https://http.cat/406"
+            "image": "https://http.cat/405"
         },
     )
 
-@app.get("/v1/titles/{tid}/versions/{ver}/download/wad", response_model=bytes)
+@app.get(
+    "/v1/titles/{tid}/versions/{ver}/download/wad",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/octet-stream": {}},
+            "description": "Returns a WAD file for the requested Title and version as an attachment.",
+            "headers": {
+                "Content-Disposition": {
+                    "description": "The name of the WAD file",
+                    "schema": {"type": "string"},
+                },
+                "X-Metadata": {
+                    "description": "Metadata indicating the Title ID and version of the WAD returned",
+                    "schema": {"type": "json"},
+                },
+                "Access-Control-Expose-Headers": {
+                    "description": "Allows access to X-Metadata header",
+                    "schema": {"type": "string"},
+                }
+            },
+        },
+        404: {"model": ErrorMessage, "description": "The requested Title or Title version does not exist."},
+        405: {"model": ErrorMessage, "description": "The requested Title has no common Ticket and cannot be downloaded in this format."},
+    },
+)
 def download_wad(tid: str, ver: str):
     try:
         if ver == "latest":
@@ -105,7 +135,31 @@ def download_wad(tid: str, ver: str):
     )
     return response
 
-@app.get("/v1/titles/{tid}/versions/{ver}/download/enc")
+@app.get(
+    "/v1/titles/{tid}/versions/{ver}/download/enc",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/zip": {}},
+            "description": "Returns a zipfile of encrypted contents for the requested Title and version as an attachment.",
+            "headers": {
+                "Content-Disposition": {
+                    "description": "The name of the zipfile",
+                    "schema": {"type": "string"},
+                },
+                "X-Metadata": {
+                    "description": "Metadata indicating the Title ID and version of the encrypted data returned",
+                    "schema": {"type": "json"},
+                },
+                "Access-Control-Expose-Headers": {
+                    "description": "Allows access to X-Metadata header",
+                    "schema": {"type": "string"},
+                }
+            },
+        },
+        404: {"model": ErrorMessage, "description": "The requested Title or Title version does not exist."},
+    },
+)
 def download_enc(tid: str, ver: str):
     try:
         if ver == "latest":
@@ -154,7 +208,32 @@ def download_enc(tid: str, ver: str):
     )
     return response
 
-@app.get("/v1/titles/{tid}/versions/{ver}/download/dec")  # And the winner for "least efficient API endpoint" goes to...
+@app.get(
+    "/v1/titles/{tid}/versions/{ver}/download/dec",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/zip": {}},
+            "description": "Returns a zipfile of decrypted contents for the requested Title and version as an attachment.",
+            "headers": {
+                "Content-Disposition": {
+                    "description": "The name of the zipfile",
+                    "schema": {"type": "string"},
+                },
+                "X-Metadata": {
+                    "description": "Metadata indicating the Title ID and version of the decrypted data returned",
+                    "schema": {"type": "json"},
+                },
+                "Access-Control-Expose-Headers": {
+                    "description": "Allows access to X-Metadata header",
+                    "schema": {"type": "string"},
+                }
+            },
+        },
+        404: {"model": ErrorMessage, "description": "The requested Title or Title version does not exist."},
+        405: {"model": ErrorMessage, "description": "The requested Title has no common Ticket and cannot be downloaded in this format."},
+    },
+)
 def download_dec(tid: str, ver: str):
     try:
         if ver == "latest":
@@ -212,7 +291,32 @@ def download_dec(tid: str, ver: str):
     )
     return response
 
-@app.get("/v1/titles/{tid}/versions/{ver}/download/tad")
+@app.get(
+    "/v1/titles/{tid}/versions/{ver}/download/tad",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/octet-stream": {}},
+            "description": "Returns a TAD file for the requested Title and version as an attachment.",
+            "headers": {
+                "Content-Disposition": {
+                    "description": "The name of the TAD file",
+                    "schema": {"type": "string"},
+                },
+                "X-Metadata": {
+                    "description": "Metadata indicating the Title ID and version of the TAD returned",
+                    "schema": {"type": "json"},
+                },
+                "Access-Control-Expose-Headers": {
+                    "description": "Allows access to X-Metadata header",
+                    "schema": {"type": "string"},
+                }
+            },
+        },
+        404: {"model": ErrorMessage, "description": "The requested Title or Title version does not exist."},
+        405: {"model": ErrorMessage, "description": "The requested Title has no common Ticket and cannot be downloaded in this format."},
+    },
+)
 def download_tad(tid: str, ver: str):
     try:
         if ver == "latest":
@@ -258,15 +362,16 @@ def download_tad(tid: str, ver: str):
     )
     return response
 
-@app.get('/version')
-def get_version():
-    result = {
-        "libWiiPy Version": version("libWiiPy"),
-        "libTWLPy Version": version("libTWLPy"),
+@app.get(
+    "/health",
+    response_class=JSONResponse,
+    responses={
+        200: {
+            "content": {"application/json": {"example": {"status": "OK"}}},
+            "description": "Indicates that the API is healthy and responding to requests.",
+        },
     }
-    return result
-
-@app.get("/health")
+)
 def health_check():
     return JSONResponse(status_code=200, content={"status": "OK"})
 
